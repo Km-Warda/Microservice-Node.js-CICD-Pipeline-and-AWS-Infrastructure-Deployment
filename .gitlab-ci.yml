@@ -1,0 +1,126 @@
+#to make the pipeline only run in main branch
+workflow:
+    rules:
+        - if: $CI_COMMIT_BRANCH != "main" && $CI_PIPELINE_SOURCE != "merge_request_event"
+          when: never
+        - when: always
+variables:
+    runner:
+        wardavm
+        #ec2 , microservice , warda
+    docker_login: docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    PROJECT_PORT: 4000
+stages:
+    - build
+    - deploy
+
+.microservice_build:
+    image: docker:dind
+    tags: 
+        - $runner
+    before_script:
+        - export IMAGE_NAME=$CI_REGISTRY_IMAGE/$MICROSERVICE_NAME
+        - export IMAGE_VERSION=$MICROSERVICE_VERSION
+        - $docker_login
+    script:
+        - docker build -t $IMAGE_NAME:$IMAGE_VERSION $MICROSERVICE_NAME
+        - docker push $IMAGE_NAME:$IMAGE_VERSION
+    variables:
+        MICROSERVICE_NAME: ""
+        MICROSERVICE_VERSION: ""
+        MICROSERVICE_DIRECTORY: ""
+
+build_frontend:
+    stage: build
+    extends: .microservice_build
+    variables:
+        MICROSERVICE_NAME: frontend
+        MICROSERVICE_VERSION: "1.2"
+    #To run this job specific to changes in specific folder instead of running whole pipeline
+    only:
+        changes:
+            - "frontend/**/*"
+
+build_products:
+    stage: build
+    extends: .microservice_build
+    variables:
+        MICROSERVICE_NAME: products
+        MICROSERVICE_VERSION: "1.7"
+    #To run this job specific to changes in specific folder instead of running whole pipeline
+    only:
+        changes:
+            - "products/**/*"
+
+build_shopping-cart:
+    stage: build
+    extends: .microservice_build
+    variables:
+        MICROSERVICE_NAME: shopping-cart
+        MICROSERVICE_VERSION: "1.5"
+    #To run this job specific to changes in specific folder instead of running whole pipeline
+    only:
+        changes:
+           - "shopping-cart/**/*"
+
+.deploy:
+    stage: deploy
+    tags: 
+        - $runner
+    variables:
+        MICROSERVICE_NAME: ""
+        MICROSERVICE_VERSION: ""
+        APP_PORT: ""
+        EXPORT_PORT: ""
+    before_script:
+        - chmod 400 $ssh_key_ec2
+        - export IMAGE_NAME=$CI_REGISTRY_IMAGE/$MICROSERVICE_NAME
+        - export IMAGE_VERSION=$MICROSERVICE_VERSION
+    script:
+        - scp -o StrictHostKeyChecking=no -i $ssh_key_ec2 ./docker-compose.yaml ubuntu@$public_ip:/home/ubuntu
+        - ssh -o StrictHostKeyChecking=no -i $ssh_key_ec2 ubuntu@$public_ip "
+            docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY &&
+            export COMPOSE_PROJECT_NAME=$MICROSERVICE_NAME &&
+            export DC_IMAGE_NAME=$IMAGE_NAME && 
+            export DC_IMAGE_VERSION=$IMAGE_VERSION &&
+            export DC_APP_PORT=$APP_PORT &&
+            export DC_EXPORT_PORT=$EXPORT_PORT &&
+            docker network create microservice_network || true &&
+            docker-compose -f docker-compose.yaml down &&
+            docker-compose -f docker-compose.yaml up -d"
+    environment:
+        name: $MICROSERVICE_NAME
+        url: $SERVER_URL:$PROJECT_PORT
+
+deploy_frontend:
+    extends: .deploy
+    variables:
+        MICROSERVICE_NAME: frontend
+        MICROSERVICE_VERSION: "1.2"
+        APP_PORT: $PROJECT_PORT
+        EXPORT_PORT: 3000
+    only:
+        changes:
+            - "frontend/**/*"
+
+deploy_products:
+    extends: .deploy
+    variables:
+        MICROSERVICE_NAME: products
+        MICROSERVICE_VERSION: "1.7"
+        APP_PORT: 3000
+        EXPORT_PORT: 3001
+    only:
+        changes:
+            - "products/**/*"
+
+deploy_shopping-cart:
+    extends: .deploy
+    variables:
+        MICROSERVICE_NAME: shopping-cart
+        MICROSERVICE_VERSION: "1.5"
+        APP_PORT: 5000
+        EXPORT_PORT: 3002
+    only:
+        changes:
+            - "shopping-cart/**/*"
